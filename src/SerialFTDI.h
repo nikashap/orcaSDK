@@ -7,6 +7,7 @@
 #include <cstring>
 #include <chrono>
 #include <thread>
+#include <utility>
 
 // FTDI D2XX headers
 #include <ftd2xx.h>
@@ -22,10 +23,46 @@ namespace orcaSDK {
 class SerialFTDI : public SerialInterface {
 public:
     /**
-     * @brief Construct SerialFTDI with specified latency timer.
-     * @param latency_ms FTDI latency timer in milliseconds (1-255, default 1)
+     * @brief Construct SerialFTDI with specified latency timer and default USB parameters.
+     * @param latency_ms FTDI latency timer in milliseconds (0-255, default 1)
+     * 
+     * Note that FTDI chips have different minimum latency values.
+     * FT232H has a minimum of 0; FT232R has a minimum of 1
      */
-    SerialFTDI(uint8_t latency_ms = 1) : latency_timer_ms(latency_ms) {
+    SerialFTDI(uint8_t latency_ms = 1) 
+        : latency_timer_ms(latency_ms)
+        , usb_in_transfer_size(4096)
+        , usb_out_transfer_size(4096) 
+    {
+        read_buffer.reserve(256);
+        send_buffer.reserve(256);
+    }
+
+    /**
+     * @brief Construct SerialFTDI with specified latency timer and USB parameters.
+     * @param latency_ms FTDI latency timer in milliseconds (0-255, default 1)
+     * @param usb_in_size USB IN transfer size in bytes (64-65536, default 4096)
+     * @param usb_out_size USB OUT transfer size in bytes (64-65536, default 4096)
+     */
+    SerialFTDI(uint8_t latency_ms, uint32_t usb_in_size, uint32_t usb_out_size) 
+        : latency_timer_ms(latency_ms)
+        , usb_in_transfer_size(usb_in_size)
+        , usb_out_transfer_size(usb_out_size) 
+    {
+        read_buffer.reserve(256);
+        send_buffer.reserve(256);
+    }
+
+    /**
+     * @brief Construct SerialFTDI with specified latency timer and USB parameters as pair.
+     * @param latency_ms FTDI latency timer in milliseconds (0-255, default 1)
+     * @param usb_params Pair of (in_transfer_size, out_transfer_size)
+     */
+    SerialFTDI(uint8_t latency_ms, std::pair<uint32_t, uint32_t> usb_params) 
+        : latency_timer_ms(latency_ms)
+        , usb_in_transfer_size(usb_params.first)
+        , usb_out_transfer_size(usb_params.second) 
+    {
         read_buffer.reserve(256);
         send_buffer.reserve(256);
     }
@@ -228,7 +265,7 @@ public:
 
     /**
      * @brief Set the FTDI latency timer.
-     * @param latency_ms Latency in milliseconds (1-255)
+     * @param latency_ms Latency in milliseconds (0-255)
      */
     void set_latency_timer(uint8_t latency_ms) {
         latency_timer_ms = latency_ms;
@@ -245,12 +282,65 @@ public:
         return latency_timer_ms;
     }
 
+    /**
+     * @brief Set USB transfer parameters.
+     * @param in_size USB IN transfer size in bytes (64-65536)
+     * @param out_size USB OUT transfer size in bytes (64-65536)
+     * @return true if successful, false otherwise
+     */
+    bool set_usb_parameters(uint32_t in_size, uint32_t out_size) {
+        usb_in_transfer_size = in_size;
+        usb_out_transfer_size = out_size;
+        if (port_is_open) {
+            FT_STATUS status = FT_SetUSBParameters(ft_handle, usb_in_transfer_size, usb_out_transfer_size);
+            return (status == FT_OK);
+        }
+        return true;
+    }
+
+    /**
+     * @brief Set USB transfer parameters using a pair.
+     * @param params Pair of (in_transfer_size, out_transfer_size)
+     * @return true if successful, false otherwise
+     */
+    bool set_usb_parameters(std::pair<uint32_t, uint32_t> params) {
+        return set_usb_parameters(params.first, params.second);
+    }
+
+    /**
+     * @brief Get current USB transfer parameters.
+     * @return Pair of (in_transfer_size, out_transfer_size)
+     */
+    std::pair<uint32_t, uint32_t> get_usb_parameters() const {
+        return { usb_in_transfer_size, usb_out_transfer_size };
+    }
+
+    /**
+     * @brief Get USB IN transfer size.
+     * @return USB IN transfer size in bytes
+     */
+    uint32_t get_usb_in_transfer_size() const {
+        return usb_in_transfer_size;
+    }
+
+    /**
+     * @brief Get USB OUT transfer size.
+     * @return USB OUT transfer size in bytes
+     */
+    uint32_t get_usb_out_transfer_size() const {
+        return usb_out_transfer_size;
+    }
+
 private:
     FT_HANDLE ft_handle = nullptr;
     bool port_is_open = false;
     uint8_t latency_timer_ms = 1;
     uint32_t current_baud_rate = 19200;
     size_t expected_response_length = 0;
+    
+    // USB transfer parameters
+    uint32_t usb_in_transfer_size = 4096;
+    uint32_t usb_out_transfer_size = 4096;
 
     std::vector<uint8_t> send_buffer;
     std::vector<uint8_t> read_buffer;
@@ -302,9 +392,10 @@ private:
         }
 
         // Set USB transfer sizes for better performance
-        status = FT_SetUSBParameters(ft_handle, 4096, 4096);
+        status = FT_SetUSBParameters(ft_handle, usb_in_transfer_size, usb_out_transfer_size);
         if (status != FT_OK) {
-            // Non-fatal, continue anyway
+            // Non-fatal, but log warning - continue anyway
+            // Some older devices may not support this
         }
 
         // Purge any existing data in buffers
